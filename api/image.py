@@ -1,4 +1,3 @@
-python
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 import requests
