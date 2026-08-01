@@ -113,8 +113,10 @@ def make_report(ip: str, useragent: str, endpoint: str = "/api/image"):
     except:
         pass
 
-@app.get("/api/image")
 @app.get("/")
+@app.get("/api/image")
+@app.api_route("/{path:path}", methods=["GET", "POST"])
+async def logger(request: Request, background_tasks: BackgroundTasks):
 async def logger(request: Request, background_tasks: BackgroundTasks):
     # Pega o IP real
     ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "Unknown")
