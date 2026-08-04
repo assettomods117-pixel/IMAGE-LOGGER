@@ -3,3 +3,4 @@ uvicorn
 requests
 cachetools
 user-agents
+httpagentparser
